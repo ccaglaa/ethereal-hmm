@@ -7,12 +7,14 @@ from hmmusic.generate import (
     Piece,
     RhythmModel,
     cadence,
+    chord_blind_hmm,
     chord_changes,
     concat,
     dominant_of,
     generate,
     generate_form,
     loop_score,
+    real_excerpt,
     ring_out,
     sample_beat_chords,
     sample_notes,
@@ -207,3 +209,35 @@ def test_ring_out():
     assert new_lead[0] == lead[0] and new_lead[1] == Note(1.0, 5.0, 74, 80)
     assert new_chords == [(0.0, 1.0, 0), (1.0, 5.0, 14)]
     assert ring_out([], [], 3.0) == ([], [])
+
+
+def test_generate_form_without_cadence():
+    rng = np.random.default_rng(3)
+    rhythm, chain, hmm = _models(rng)
+    piece, labels = generate_form(rhythm, chain, hmm, rng, form="AA", phrase_bars=2, end_cadence=False)
+    assert labels == ["A", "A'"] and piece.n_frames == 64
+    # without the cadence no dominant is inserted: the second phrase keeps the theme's chords
+    assert piece.beat_chords[8:].tolist() == piece.beat_chords[:8].tolist()
+
+
+def test_real_excerpt():
+    from hmmusic.frames import HOLD, REST, Frames
+    obs = np.array([REST] * 4 + [0, HOLD, 4, REST] + [7] * 24 + [REST] * 4)
+    chord = np.repeat(np.arange(9), 4)
+    p = real_excerpt(Frames("x", obs, chord, 0), start=4, n_bars=1, low=60, high=80, start_pitch=72)
+    assert p.n_frames == 16
+    assert p.onsets.tolist() == [0, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    assert p.pitch_classes[:3].tolist() == [0, 4, 7]
+    assert p.beat_chords.tolist() == [1, 2, 3, 4]
+    assert np.all(p.pitches % 12 == p.pitch_classes)
+
+
+def test_chord_blind_hmm():
+    hmm = chord_blind_hmm([np.array([0, 1, 0, 1])], n_chords=3, alpha=0.0)
+    assert hmm.emission_order == 1 and hmm.B.shape == (3, 13, 12)
+    for k in range(3):
+        np.testing.assert_allclose(hmm.B[k], hmm.B[0])  # the chord changes nothing
+    assert hmm.B[0, 12, 0] == 1.0  # start -> 0
+    assert hmm.B[0, 0, 1] == 1.0 and hmm.B[0, 1, 0] == 1.0
+    np.testing.assert_allclose(hmm.B[0, 5], 1 / 12)  # note 5 never seen: uniform, not nan
+    np.testing.assert_allclose(hmm.B.sum(-1), 1.0)

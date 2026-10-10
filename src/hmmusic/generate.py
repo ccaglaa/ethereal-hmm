@@ -232,11 +232,13 @@ def concat(pieces: list[Piece]) -> Piece:
 
 def generate_form(rhythm: RhythmModel, chord_chain: MarkovChain, note_hmm: HMM, rng: np.random.Generator,
                   form: str = "AABA", phrase_bars: int = 4, candidates: int = 50, min_changes: int = 3,
+                  end_cadence: bool = True,
                   low: int = 67, high: int = 86, start_pitch: int = 76) -> tuple[Piece, list[str]]:
     """A piece made of phrases: A = the theme, B = contrast, repeated A = varied, last A = cadence
 
     A: its chords are the most loopable of `candidates` sampled progressions, starting at home if possible
     Repeats of A keep the first half of the phrase and answer differently in the second half
+    end_cadence=False stops without the final close (for excerpts compared with cut real songs)
     Returns the piece and the label of each phrase (A, A', B, A'' ...)
     """
     if note_hmm.emission_order != 1:
@@ -271,7 +273,7 @@ def generate_form(rhythm: RhythmModel, chord_chain: MarkovChain, note_hmm: HMM, 
             prev = phrases[-1]
             p = new_phrase(list(prev.beat_chords), int(prev.pitch_classes[-1]), int(prev.pitches[-1]))
             labels.append(part)
-        if last:
+        if last and end_cadence:
             p = cadence(p, int(a_chords[0]), note_hmm, rng, low, high)
         phrases.append(p)
     return concat(phrases), labels
@@ -290,3 +292,33 @@ def ring_out(lead: list[Note], chords: list[tuple[float, float, int]], seconds: 
         start, end, symbol = chords[-1]
         chords = chords[:-1] + [(start, end + seconds, symbol)]
     return lead, chords
+
+
+def real_excerpt(frames, start: int, n_bars: int, low: int = 67, high: int = 86, start_pitch: int = 76) -> Piece:
+    """A window of a real song as a Piece, from frame `start` (a beat), for n_bars bars of 4/4
+
+    Pitches go through the same octave rule as generated pieces, so only the notes differ
+    """
+    n_frames = 16 * n_bars
+    window = frames.obs[start : start + n_frames]
+    onsets = np.flatnonzero(window < 12)
+    pcs = window[onsets]
+    chords = frames.chord[start : start + n_frames : SUBDIVISIONS]
+    return Piece(onsets, pcs, _pitches(pcs, start_pitch, low, high), chords, n_frames)
+
+
+def chord_blind_hmm(note_seqs: list[np.ndarray], n_chords: int = N_CHORDS, alpha: float = 0.1) -> HMM:
+    """An ar1 HMM whose emission ignores the chord: B[k, u, v] = P(v | u) for every chord k
+
+    Used as a control: same generator, same rhythm and chords, notes blind to the harmony
+    """
+    V = 12
+    counts = np.full((V + 1, V), alpha)
+    for x in note_seqs:
+        np.add.at(counts, (np.r_[V, x[:-1]], x), 1)
+    sums = counts.sum(axis=1, keepdims=True)
+    # a previous note never seen (possible only with alpha = 0) gets a uniform row instead of 0 / 0
+    bigram = np.where(sums > 0, counts / np.where(sums > 0, sums, 1), 1 / V)
+    B = np.broadcast_to(bigram, (n_chords, V + 1, V)).copy()
+    uniform = np.full(n_chords, 1 / n_chords)
+    return HMM(uniform, np.full((n_chords, n_chords), 1 / n_chords), B)

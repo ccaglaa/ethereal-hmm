@@ -179,6 +179,27 @@ patterns already heard earlier in the same piece (real songs: their first 90 not
   half of real songs (21%), without hurting harmony.
 - Not measured: whether it sounds good. That needs listening.
 
+### Blind listening test (`scripts/listening_test.py`)
+
+18 clips of 8 bars, shuffled, 6 per source:
+- real: excerpts of test songs (never seen in training) with their chords
+- ours: chord HMM, AABA form of 2-bar phrases, no final cadence (real excerpts are cut mid-song, so an
+  ending would give ours away)
+- control: the same generator, but notes depend only on the previous note, not on the chord (`chord_blind_hmm`)
+
+Everything except the notes is identical (airy preset, tempo drawn in 99-136 bpm per clip, octave rule,
+legato notes, fade out). Checked before listening, per source: length 19 to 20 s, loudness ar. -12 dB,
+44 to 50 notes, same mean pitch and note length, no silent chords. The answer key is stored base64 encoded.
+The listener rates each clip 1 to 5 and guesses real or generated; `score` compares mean ratings with a
+permutation test.
+
+```
+python scripts/listening_test.py make
+python scripts/listening_test.py score
+```
+
+Results: pending.
+
 ## Setup
 
 ```
