@@ -1,235 +1,163 @@
-# ethereal-hmm
+# Ethereal HMM
 
-Generate ethereal synth melodies with a hidden Markov model written from scratch in NumPy.
+<p align="center">
+  <img src="figures/pianoroll.png" width="780" alt="Piano roll of a generated 16-bar piece in AABA form: pink lead notes above violet pad chords, chord names Am Em F C G along the bottom, ending E then Am">
+</p>
 
-The hidden state is the chord, the observation is the melody note. When generating, the hidden chord
-sequence is rendered as a soft synth pad and the observed notes as the lead, so the hidden states are audible.
+**Dreamy synth melodies from a hidden Markov model written from scratch: the hidden states are chords, and you can hear them.**
 
-## Data
+![Python](https://img.shields.io/badge/python-3.10%2B-e0447e)
+![NumPy only](https://img.shields.io/badge/NumPy-only-7b68ee)
+![Tests](https://img.shields.io/badge/tests-161-e0447e)
+![Data](https://img.shields.io/badge/data-POP909%20%28MIT%29-7b68ee)
 
-[POP909](https://github.com/music-x-lab/POP909-Dataset) (MIT license, ISMIR 2020): 909 Chinese pop songs as
-MIDI with a separate MELODY track, plus annotated chords, beats and keys.
+## In 30 seconds
 
-Facts checked on the full dataset (`python scripts/data_stats.py`):
+An HMM explains what you observe with a sequence of states you do not see. Here the observations are the
+notes of a melody and the hidden states are the chords under it. Trained on 909 pop songs, the model
+generates new melodies together with their chords; the chords become a soft synth pad and the notes the lead.
 
-- 309,423 melody notes, median 339 per song, median pitch 72 (C5)
-- beat grid: one row per beat, median 0.75 s (ar. 80 bpm, many slow ballads)
-- note onsets fall on quarter beats: 44% on the beat, 35% on the half beat, 21% on the other two 16ths
-  -> a 16th note grid keeps every onset, an 8th note grid would lose 1 in 5
-- 9.2% of consecutive melody notes overlap, almost all by a small legato amount (median 1/20 of a beat)
-  -> the melody is effectively monophonic
-- 757 of 909 songs stay in one key; 502 major, 407 minor
-- 28 chord qualities; maj and min dominate
+* The HMM is written from scratch (forward-backward with scaling, Viterbi, posterior decoding, Baum-Welch),
+  and **every algorithm is tested against brute force** over all possible state paths
+* Generated notes fit their chord as often as real melodies do: **67.0% vs 66.4%**, against 45.4% when the
+  notes ignore the chord
+* Free sampling never repeats itself; an **AABA form** brings repeated material from 0% to 12% (real songs:
+  21%), and every piece closes on a proper cadence
+* **Left alone, Baum-Welch does not discover chords.** It learns melodic motion instead (repeat, rise, fall),
+  which predicts notes 2% better but says little about harmony
+* Everything runs on NumPy and the standard library, including the MIDI reader and the synthesizer
 
-## Representation (`hmmusic/frames.py`)
+## Listen
 
-- Every song is transposed to C major or A minor (both use only the white keys); 152 songs that change key are skipped -> 757 songs
-- One frame per 16th note. Melody symbol per frame: 0..11 = a new note with that pitch class, 12 = HOLD, 13 = REST.
-  Octaves are dropped and chosen again when decoding (closest to the previous note, range C4 to C6)
-- Chords reduced to root + major-like or minor-like (24) + no chord. Most common: Am, G, C, F, Dm, Em
-- Quantization loses 508 of 254,032 notes (0.2%, notes landing on the same 16th)
-- Songs are cut into phrases at silences of 2 bars or more (intros, interludes); otherwise 20% of frames are long silences
-- Split by song, seed 0: 605 / 76 / 76 songs for train / val / test
+Each link opens an MP3 file of about 40 seconds (the reference song: 1 minute).
 
-The melodies are close to pentatonic: C D E G A make 24% of frames, F and B only 2.6%. 64% of note onsets are a
-tone of the current chord triad, which is the signal the HMM will try to discover without labels.
+| Piece | Tempo | Airy | Dreamy |
+|---|---|---|---|
+| Seed 1, the piece in the figure above | 116 bpm | [listen](audio/seed1_airy.mp3) | [listen](audio/seed1_dreamy.mp3) |
+| Seed 2 | 130 bpm | [listen](audio/seed2_airy.mp3) | |
+| Seed 0 | 131 bpm | | [listen](audio/seed0_dreamy.mp3) |
+| Reference: a real song from the test set, same synth | 45 bpm | [listen](audio/reference_song571_airy.mp3) | |
 
-## M1 results: Markov chain baselines (`python scripts/markov_baselines.py`)
+The two sounds differ only in rendering: *dreamy* has a softer lead, a slower pad and a 7-second reverb.
 
-Held-out bits per frame on test songs (lower is better; a uniform guess over 14 symbols is 3.807 bits).
+## How it works
 
-| order | additive (alpha tuned on val) | Witten-Bell |
+```mermaid
+flowchart LR
+    D[POP909 songs] -->|transpose to C or Am, 16th grid| T[Melodies and chords]
+    T --> R[Rhythm: gap to next note, given the position in the beat]
+    T --> C[Chords: Markov chain, one chord per beat]
+    T --> H[HMM emissions: note given chord and previous note]
+    R --> G[Generator: AABA form, cadence]
+    C --> G
+    H --> G
+    G -->|hidden chords| P[Pad]
+    G -->|observed notes| L[Lead]
+    P --> S[NumPy synth: delay, reverb]
+    L --> S
+    S --> W[WAV and MIDI]
+```
+
+1. **Data.** Each song's melody and annotated chords are moved to C major or A minor and put on a grid of 16th notes
+2. **Model.** The chord changes once per beat; at every note, the HMM draws a pitch from P(note | chord, previous note).
+   Rhythm and chord progressions have their own small models
+3. **Form.** A 4-bar theme is played three times (A A' B A''); the repeats keep its first half and answer differently.
+   The last bar goes from the dominant to the home chord (E to Am, G to C), with the melody stepping down to the root
+4. **Sound.** Additive synthesis: two detuned oscillators with slow vibrato for the lead, a dark detuned pad whose
+   chords move as little as possible from one to the next, a ping-pong delay and a convolution reverb
+
+## Results
+
+<p align="center">
+  <img src="figures/readme_results.png" width="780" alt="Notes on the current chord: real 66.4%, ours with form 67.0%, ours free 61.6%, control 45.4%. Patterns heard before: real 21.2%, ours with form 12.3%, free 0.0%, control 0.1%">
+</p>
+
+Fifty generated pieces of 16 bars compared with 160 phrases from test songs. The control uses the same rhythm
+and chords, but its notes depend only on the previous note: the gap between 67% and 45% is what the hidden
+chords contribute. Step sizes between notes (repeat, step, leap) match the real melodies within 3 points.
+
+## What the HMM learned, and what it did not
+
+Bits per note on held-out songs (lower is better; guessing uniformly over 12 notes costs 3.585 bits):
+
+| Model | Bits per note | Chord recovered from the melody |
 |---|---|---|
-| 0 | 2.427 | |
-| 1 | 2.136 | 2.136 |
-| 2 | 1.920 | 1.922 |
-| 3 | 1.891 | 1.899 |
-| 4 | **1.848** | 1.866 |
-| 5 | | 1.974 |
+| Best Markov chain (order 2) | 2.358 | |
+| HMM, states = annotated chords | 2.381 | **36.9%** |
+| HMM learned by Baum-Welch, 50 states | **2.309** | 23.6% |
+| Guess the chord from the current note only | | 28.2% |
 
-Likelihood and sample quality disagree. The additive order 4 model scores best, but its samples are chromatic noise
-(`C F B F# - Ab B D E ...`): most of the 15^4 contexts were never seen, add-alpha makes their next symbol uniform,
-and once a sample leaves the scale it never comes back. Test melodies rarely visit unseen contexts, so the score
-does not show it. Witten-Bell backs off to shorter contexts and its samples stay in the scale (`E - D - E - A ...`).
-Lesson: report likelihood and listen.
+* **Chords alone explain melodies poorly.** Melodies move by small steps; the chord mostly decides which of the nearby
+  notes comes next. Letting each note depend on the previous one as well brought the chord HMM from 2.63 to 2.38 bits
+* **The decoder matters.** Viterbi (the single best path) recovered only 24.5% of chords, below the one-note guess,
+  because it over-smooths chords that last several notes. Posterior decoding (the best chord at each note) gets 36.9%
+* **EM optimizes likelihood, not meaning.** Without labels, the states that help prediction most are not chords.
+  With few states each one becomes a single note; given the previous note, they become "repeat", "rise" and "fall"
+* That is why generation uses the HMM trained with the annotated chords: it predicts slightly worse, but its
+  hidden states are exactly what the pad needs
 
-## M2: HMM from scratch (`hmmusic/hmm.py`)
+## How the results were checked
 
-Forward-backward with scaling, Viterbi, posterior decoding, Baum-Welch (EM with optional pseudo counts),
-supervised fitting and sampling. Two emission models:
-- plain: `B[i, v] = P(note | state)`
-- autoregressive (ar1): `B[i, u, v] = P(note | state, previous note)`
+* **Brute force for every inference algorithm.** Likelihood, posteriors, Viterbi, posterior decoding and one EM step
+  are compared with explicit sums over all K^T state paths on small cases
+* **Split by song.** 605 / 76 / 76 songs for training, validation and test; smoothing and model orders are chosen on
+  validation songs, numbers reported on test songs
+* **Seeds.** Baum-Welch results are averaged over 3 random starts (standard deviation 0.003 to 0.017 bits)
+* **Likelihood is not enough.** The best-scoring Markov chain produced chromatic noise when sampled, because its
+  smoothing makes unseen contexts uniform; samples are listened to, not only scored
+* **Bugs found by tests and fixed.** An emission of probability 0 for unseen note pairs, a release envelope starting
+  from the wrong level, and normalization applied before the fade-out
+* **161 unit tests**, one command per figure and table
 
-Every inference result is tested against brute force over all K^T state paths, and one EM step is
-checked against expected counts computed by brute force.
+## Try it
 
-### Why one symbol per note, not per 16th
-
-On 16th frames the HMM with the annotated chords as states scored 2.38 bits per frame, worse than an order 1
-Markov chain (2.14): 73% of frames are HOLD or REST, and a chord says nothing about rhythm. So M2 models
-the sequence of notes (pitch class only); rhythm gets its own model in M3.
-
-### Results (`python scripts/hmm_experiments.py`, then `python scripts/summarize_hmm.py`)
-
-202,846 / 24,374 / 26,304 notes for train / val / test. Uniform guess: 3.585 bits per note.
-Baum-Welch: random Dirichlet start, pseudo count 0.1, stops at a gain below 1e-4 nats per note, 3 seeds (mean +- sd).
-
-| model | test bits per note | chord accuracy % |
-|---|---|---|
-| Markov order 0 / 1 / 2 / 3 / 4 | 2.679 / 2.404 / **2.358** / 2.366 / 2.473 | |
-| always the most common chord (Am) | | 18.1 |
-| chord from the current note only | | 28.2 |
-| HMM, states = annotated chords, plain | 2.633 | 33.8 |
-| HMM, states = annotated chords, ar1 | 2.381 | **36.9** |
-| Baum-Welch plain, K = 8 / 25 / 50 | 2.409 / 2.347 / 2.318 | 26.6 / 28.5 / 29.7 |
-| Baum-Welch ar1, K = 4 / 8 / 25 / 50 | 2.369 / 2.343 / 2.313 / **2.309** | 21.0 / 22.0 / 23.6 / 23.6 |
-
-Seed sd is 0.003 to 0.017 bits. Chord accuracy for Baum-Welch: each learned state is mapped to the chord it
-co-occurs with most on train.
-
-What this shows:
-
-1. **Unsupervised HMMs predict melodies best**, but only a little: 2.31 bits per note vs 2.36 for the best
-   Markov chain (about 2%, 3 seed sd).
-2. **Chords alone explain melodies poorly.** With the annotated chords as states, the plain HMM (2.63) barely
-   beats note frequencies (2.68). Adding the previous note (ar1) brings it to 2.38, close to Markov order 2.
-   Melodies move by small steps; the chord mostly decides which of the nearby notes.
-3. **Decoding matters.** Viterbi (best single path) gave 22.2% / 24.5% chord accuracy, below the current note
-   baseline; posterior decoding (best state per note) gives 33.8% / 36.9%. Viterbi over-smooths because
-   chords last several notes (76% of notes keep the previous note's chord).
-4. **Baum-Welch does not discover chords.** EM maximizes likelihood, and the hidden variable that helps most
-   is not harmony. Plain HMMs with few states learn single notes (K=8: one state per scale note), a Markov
-   chain in disguise. Given the previous note (ar1), states learn melodic motion
-   (`python scripts/inspect_states.py outputs/hmm_bw_ar1_K8_seed1.npz`): a "repeat" state (88% same note),
-   a "rise" state (67% up), "fall" states, a one-note falling step that never stays. Their chord accuracy
-   (ar1 ar. 23%) is below the current note baseline.
-
-Consequence for M3: generation uses the HMM with annotated chords as states (ar1). It predicts slightly
-worse than the best unsupervised model (2.38 vs 2.31 bits) but its hidden states are chords, which is
-exactly what the synth pad needs.
-
-## M3: generation and sound
-
-### Synth (`hmmusic/synth.py`, NumPy only)
-
-- lead: soft additive tone (4 harmonics), two oscillators detuned by +-4 cents, slow vibrato fading in,
-  ping-pong delay on a dotted eighth
-- pad: triads voiced between E3 and C5 with voice leading (each chord moves as little as possible from the
-  previous one), 3 detuned oscillators, 1.6 s attack, 2.5 s release, dark (5 harmonics), plus a soft root bass
-- reverb: convolution (FFT) with a synthetic stereo impulse response, decaying noise, RT60 4.5 s
-- master: soft clip, fades, peak at -1 dBFS, 16 bit stereo WAV with the standard library
-- presets (`PRESETS`), so the same notes can be rendered several ways:
-  - `airy` (default): the sound above
-  - `dreamy`: softer lead, slower pad, reverb 7 s and wetter, more echoes
-  - `glass`: brighter bell like lead plus a quiet copy one octave up (shimmer), lighter pad
-  - `pulse`: chord tones as 8th notes (arpeggio) over a quieter pad, shorter reverb, for fast tempos
-- the pad attack is the shorter of 1.6 s and 1.5 beats (1 beat for `pulse`): at 120 bpm a fixed 1.6 s attack would still be
-  fading in when the next chord arrives
-
-`python scripts/render_song.py` plays a real test song (default: the slowest one, 571) through the synth,
-as a reference for the sound.
-
-### Generator (`hmmusic/generate.py`)
-
-An HMM whose hidden chord moves once per beat (chords change on beats, as in the songs) and emits a note at each onset:
-- rhythm: P(gap to next onset | position in the beat, previous gap), gaps of 1 to 16 sixteenths
-- chords: Witten-Bell Markov chain over the chord at each beat; order 4 chosen on validation songs
-  (1.823 / 1.720 / 1.713 / 1.712 bits per beat for orders 1 to 4; higher orders do not fit in memory)
-- notes: pitch class from `B[chord, previous pitch class]`, the emission table of the ar1 chord HMM of M2;
-  octave = closest to the previous note between G4 and D6
-
-`python scripts/generate.py` writes `outputs/ethereal_seed<k>_AABA.wav` and `.mid` (tracks LEAD and PAD);
-`--form=none` for free sampling, or another form such as `--form=ABAB`:
-every A is the theme (varied after the first), every other letter is a new contrasting phrase.
-Tempo is drawn between 99 and 136 bpm for each seed (`--bpm=99-136`, or a fixed value like `--bpm=110`).
-By default each piece is written as `_airy.wav` and `_dreamy.wav` (the two favourites after listening);
-`--preset=glass` picks one sound, `--preset=all` writes the same piece once per preset.
-
-### Form (`generate_form`)
-
-Free sampling never repeats anything, while real songs do. `generate_form` arranges 4-bar phrases as AABA:
-- A: the theme. Its chords are picked among 50 sampled progressions: at least 3 chord changes (the most
-  loopable progressions are otherwise static, staying on a chord is always the likeliest move; real songs
-  change ar. 5 times per 4 bars), starting on a home chord (C or Am), then the highest probability of
-  going from its last chords back to its first
-- A', A'': same rhythm and chords, first 2 bars identical, notes of the last 2 bars sampled again (an answer)
-- B: new rhythm and chords, continuing from where A ends
-- the last phrase ends with a full close: the last 2 beats of the second to last bar become the dominant
-  (G before C, E major before A minor), notes there are sampled again from it, the last one is the scale
-  step above the root (D before C, B before A), and the root falls on the downbeat of the last bar, alone
-- the final note and chord ring 4 s longer whatever the tempo (`ring_out`); at 130 bpm the last bar
-  lasts only ar. 2 s, and endings first felt cut off
-
-### Evaluation (`python scripts/evaluate_generation.py`)
-
-50 generated pieces of 16 bars vs 160 test phrases. The control uses the same rhythm and chords but an
-order 2 Markov chain for notes, so the notes ignore the chord. "Repeated" = share of 8-note pitch class
-patterns already heard earlier in the same piece (real songs: their first 90 notes, about 16 bars).
-
-| | chord tone | repeat | step 1-2 | leap 3+ | notes per bar | repeated |
-|---|---|---|---|---|---|---|
-| test songs | 66.4% | 25.0% | 42.1% | 32.8% | 5.2 | 21.2% |
-| chord HMM, free | 61.6% | 22.4% | 45.3% | 32.3% | 5.6 | 0.0% |
-| Markov 2, no chords (control) | 45.4% | 24.8% | 44.7% | 30.5% | 5.6 | 0.1% |
-| chord HMM + AABA form and cadence | **67.0%** | 23.4% | 43.7% | 32.9% | 5.5 | **12.3%** |
-
-- The hidden chords do their job: generated notes are chord tones far more often than notes that ignore
-  the chord (62 to 67% vs 45%), close to real melodies (66%). Step sizes match the real melodies.
-- Free sampling has no memory beyond a few notes: 0% repeated patterns. Form brings it to 12%, about
-  half of real songs (21%), without hurting harmony.
-- Not measured: whether it sounds good. That needs listening.
-
-### Blind listening test (`scripts/listening_test.py`)
-
-18 clips of 8 bars, shuffled, 6 per source:
-- real: excerpts of test songs (never seen in training) with their chords
-- ours: chord HMM, AABA form of 2-bar phrases, no final cadence (real excerpts are cut mid-song, so an
-  ending would give ours away)
-- control: the same generator, but notes depend only on the previous note, not on the chord (`chord_blind_hmm`)
-
-Everything except the notes is identical (airy preset, tempo drawn in 99-136 bpm per clip, octave rule,
-legato notes, fade out). Checked before listening, per source: length 19 to 20 s, loudness ar. -12 dB,
-44 to 50 notes, same mean pitch and note length, no silent chords. The answer key is stored base64 encoded.
-The listener rates each clip 1 to 5 and guesses real or generated; `score` compares mean ratings with a
-permutation test.
-
-```
-python scripts/listening_test.py make
-python scripts/listening_test.py score
-```
-
-Results: pending.
-
-## Setup
-
-```
-python3 -m venv .venv
-source .venv/bin/activate
+```bash
+git clone https://github.com/music-x-lab/POP909-Dataset.git ../POP909-Dataset
+python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
+pytest -q
+python scripts/generate.py --seeds=0,1,2
 ```
 
-Clone POP909 next to this repo, so the data lives in `../POP909-Dataset/POP909`.
+Each seed is written to `outputs/` as `_airy.wav`, `_dreamy.wav` and a MIDI file with LEAD and PAD tracks.
+Options: `--form=ABAB`, `--bpm=110` (default: drawn between 99 and 136), `--preset=all`.
+Every experiment has its own script; all commands and results are in [docs/RESULTS.md](docs/RESULTS.md).
+The README figures need `pip install -e ".[figures]"` (matplotlib).
+
+<details>
+<summary><b>Repository layout</b></summary>
 
 ```
-pytest
-python scripts/data_stats.py
-python scripts/markov_baselines.py
-python scripts/hmm_experiments.py
-python scripts/summarize_hmm.py
-python scripts/render_song.py
-python scripts/generate.py
-python scripts/evaluate_generation.py
+src/hmmusic/midi.py       MIDI file reader and writer (pure Python)
+src/hmmusic/pop909.py     load POP909 melodies, chords, beats and keys
+src/hmmusic/frames.py     transpose, 16th note frames, phrases, note sequences
+src/hmmusic/markov.py     Markov chains with additive or Witten-Bell smoothing
+src/hmmusic/hmm.py        HMM: forward-backward, Viterbi, posterior decoding, Baum-Welch
+src/hmmusic/generate.py   rhythm model, chord chain, AABA form, cadence
+src/hmmusic/synth.py      additive synth, voice leading, delay, reverb, WAV output
+src/hmmusic/decode.py     frames back to MIDI notes
+src/hmmusic/stats.py      permutation test for the listening test
+scripts/                  one script per experiment, figure or output
+tests/                    unit tests
+docs/RESULTS.md           every experiment and number
 ```
+</details>
 
-`hmm_experiments.py` takes ar. 1.5 h. Add `--quick` for a 3 minute check, or split it over two terminals
-with `--orders=0` and `--orders=1`.
+## Limitations
 
-Sampled melodies are written to `outputs/` as MIDI (open them in GarageBand).
+* No listening study yet: a blind test (real vs generated vs control, `scripts/listening_test.py`) is built but not run
+* Chords are reduced to major and minor triads; the 152 songs that change key are left out
+* Notes are pitch classes; the octave is chosen by a rule (closest to the previous note)
+* The form is designed by hand (AABA), not learned; the rhythm model only sees the previous gap
+* One dataset of Chinese pop songs: the "ethereal" character comes from the synth and the tempo, not from the data
 
-## Roadmap
+## Data and credits
 
-| # | Deliverable | Status |
-|---|---|---|
-| M1 | Data loading, MIDI reader and writer, representation, Markov chain baselines, held-out likelihood | Done |
-| M2 | HMM from scratch: forward-backward, Viterbi, Baum-Welch, tests against brute force | Done |
-| M3 | Ethereal synth renderer (NumPy to WAV), generation, evaluation and listening | Done |
+* **POP909**: Wang, Z., Chen, K., Jiang, J., Zhang, Y., Xu, M., Dai, S., Bin, G., Xia, G. (2020). *POP909: A Pop-song
+  Dataset for Music Arrangement Generation.* ISMIR. MIT license
+* **HMMs**: Rabiner, L. R. (1989). *A tutorial on hidden Markov models and selected applications in speech recognition.*
+  Proceedings of the IEEE
+* **Witten-Bell smoothing**: Witten, I. H., Bell, T. C. (1991). *The zero-frequency problem: estimating the probabilities
+  of novel events in adaptive text compression.* IEEE Transactions on Information Theory
+
+The dataset is not included in this repository; it is cloned next to it. Code under the [MIT license](LICENSE).

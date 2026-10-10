@@ -16,6 +16,7 @@ Statistics per note onset
 Usage: python scripts/evaluate_generation.py [--pieces=50] [--bars=16] [--root=../POP909-Dataset/POP909]
 """
 
+import json
 import sys
 from pathlib import Path
 
@@ -102,6 +103,9 @@ rows["chord HMM + AABA form"] = stats(formed, n_formed / (n_pieces * 16))
 rows["chord HMM + AABA form"]["repeated"] = repeated([p for p, _ in formed])
 
 keys = ["chord tone", "repeat", "step 1-2", "leap 3+", "notes/bar", "repeated"]
+Path("outputs").mkdir(exist_ok=True)
+with open("outputs/generation_eval.json", "w") as f:  # read by scripts/make_readme_figures.py
+    json.dump({name: {k: float(v) for k, v in r.items()} for name, r in rows.items()}, f, indent=2)
 print(f"{n_pieces} generated pieces of {n_bars} bars vs {len(test)} test phrases\n")
 print(f"{'':<24}" + "".join(f"{k:>12}" for k in keys))
 for name, r in rows.items():
