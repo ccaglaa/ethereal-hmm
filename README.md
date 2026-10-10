@@ -118,6 +118,13 @@ exactly what the synth pad needs.
   previous one), 3 detuned oscillators, 1.6 s attack, 2.5 s release, dark (5 harmonics), plus a soft root bass
 - reverb: convolution (FFT) with a synthetic stereo impulse response, decaying noise, RT60 4.5 s
 - master: soft clip, fades, peak at -1 dBFS, 16 bit stereo WAV with the standard library
+- presets (`PRESETS`), so the same notes can be rendered several ways:
+  - `airy` (default): the sound above
+  - `dreamy`: softer lead, slower pad, reverb 7 s and wetter, more echoes
+  - `glass`: brighter bell like lead plus a quiet copy one octave up (shimmer), lighter pad
+  - `pulse`: chord tones as 8th notes (arpeggio) over a quieter pad, shorter reverb, for fast tempos
+- the pad attack is the shorter of 1.6 s and 1.5 beats (1 beat for `pulse`): at 120 bpm a fixed 1.6 s attack would still be
+  fading in when the next chord arrives
 
 `python scripts/render_song.py` plays a real test song (default: the slowest one, 571) through the synth,
 as a reference for the sound.
@@ -134,6 +141,8 @@ An HMM whose hidden chord moves once per beat (chords change on beats, as in the
 `python scripts/generate.py` writes `outputs/ethereal_seed<k>_AABA.wav` and `.mid` (tracks LEAD and PAD);
 `--form=none` for free sampling, or another form such as `--form=ABAB`:
 every A is the theme (varied after the first), every other letter is a new contrasting phrase.
+Tempo is drawn between 99 and 136 bpm for each seed (`--bpm=99-136`, or a fixed value like `--bpm=110`).
+`--preset=dreamy` picks a sound, `--preset=all` writes the same piece once per preset.
 
 ### Form (`generate_form`)
 
@@ -144,7 +153,11 @@ Free sampling never repeats anything, while real songs do. `generate_form` arran
   going from its last chords back to its first
 - A', A'': same rhythm and chords, first 2 bars identical, notes of the last 2 bars sampled again (an answer)
 - B: new rhythm and chords, continuing from where A ends
-- the last phrase ends on the home chord, last note = its root
+- the last phrase ends with a full close: the last 2 beats of the second to last bar become the dominant
+  (G before C, E major before A minor), notes there are sampled again from it, the last one is the scale
+  step above the root (D before C, B before A), and the root falls on the downbeat of the last bar, alone
+- the final note and chord ring 4 s longer whatever the tempo (`ring_out`); at 130 bpm the last bar
+  lasts only ar. 2 s, and endings first felt cut off
 
 ### Evaluation (`python scripts/evaluate_generation.py`)
 
@@ -157,10 +170,10 @@ patterns already heard earlier in the same piece (real songs: their first 90 not
 | test songs | 66.4% | 25.0% | 42.1% | 32.8% | 5.2 | 21.2% |
 | chord HMM, free | 61.6% | 22.4% | 45.3% | 32.3% | 5.6 | 0.0% |
 | Markov 2, no chords (control) | 45.4% | 24.8% | 44.7% | 30.5% | 5.6 | 0.1% |
-| chord HMM + AABA form | **65.3%** | 22.3% | 43.1% | 34.6% | 5.6 | **12.2%** |
+| chord HMM + AABA form and cadence | **67.0%** | 23.4% | 43.7% | 32.9% | 5.5 | **12.3%** |
 
 - The hidden chords do their job: generated notes are chord tones far more often than notes that ignore
-  the chord (62 to 65% vs 45%), close to real melodies (66%). Step sizes match the real melodies.
+  the chord (62 to 67% vs 45%), close to real melodies (66%). Step sizes match the real melodies.
 - Free sampling has no memory beyond a few notes: 0% repeated patterns. Form brings it to 12%, about
   half of real songs (21%), without hurting harmony.
 - Not measured: whether it sounds good. That needs listening.

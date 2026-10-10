@@ -72,9 +72,14 @@ class Piece:
         return self.beat_chords[self.onsets // SUBDIVISIONS]
 
     def lead_notes(self, bpm: float, max_beats: float = 2.0, velocity: int = 85) -> list[Note]:
-        """Legato: each note lasts until the next onset, at most max_beats beats"""
+        """Legato: each note lasts until the next onset, at most max_beats beats
+
+        The last note is held to the end of the piece (a final note cut short sounds unfinished)
+        """
         frame = 60.0 / bpm / SUBDIVISIONS
         ends = np.minimum(np.r_[self.onsets[1:], self.n_frames], self.onsets + max_beats * SUBDIVISIONS)
+        if len(ends):
+            ends[-1] = self.n_frames
         return [Note(s * frame, e * frame, int(p), velocity) for s, e, p in zip(self.onsets, ends, self.pitches)]
 
     def chord_segments(self, bpm: float) -> list[tuple[float, float, int]]:
@@ -173,19 +178,43 @@ def vary(piece: Piece, note_hmm: HMM, keep_beats: int, rng: np.random.Generator,
                  piece.beat_chords.copy(), piece.n_frames)
 
 
-def cadence(piece: Piece, home: int, low: int = 67, high: int = 86) -> Piece:
-    """End on the home chord: last bar on the home chord, last note = its root, held to the end"""
+def dominant_of(home: int) -> int:
+    """Major chord a fifth above the home chord's root: G for C, E (major) for A minor
+
+    The dominant leads strongly back home; in minor keys pop and classical music use the major
+    dominant (E, not Em, before Am) because its third (G#) pulls up to the root A
+    """
+    return ((home // 2 + 7) % 12) * 2
+
+
+def cadence(piece: Piece, home: int, note_hmm: HMM, rng: np.random.Generator,
+            low: int = 67, high: int = 86) -> Piece:
+    """A full close: dominant on the last 2 beats of the second to last bar, home chord on the last bar
+
+    Notes under the dominant are sampled again from that chord; the last of them is the scale step above
+    the root (D before C, B before A), a chord tone of the dominant that falls by a step to the root;
+    the root lands on the downbeat of the last bar and is the only note there, held to the end
+    """
     chords = piece.beat_chords.copy()
+    dominant = dominant_of(home)
+    chords[-6:-4] = dominant
     chords[-4:] = home
     root = home // 2
+    step = (root + 2) % 12
     last_bar = piece.n_frames - 4 * SUBDIVISIONS
-    # drop notes in the second half of the last bar, keep one final note on the root
-    keep = piece.onsets < last_bar + 2 * SUBDIVISIONS
+    approach = last_bar - 2 * SUBDIVISIONS  # start of the dominant
+
+    keep = piece.onsets < last_bar
     onsets, pcs = piece.onsets[keep].copy(), piece.pitch_classes[keep].copy()
-    if onsets[-1] >= last_bar:
-        pcs[-1] = root
+    under_dominant = onsets >= approach
+    if under_dominant.any():
+        before = pcs[~under_dominant]
+        previous = int(before[-1]) if len(before) else None
+        pcs[under_dominant] = sample_notes(note_hmm.B, np.full(under_dominant.sum(), dominant), rng, previous)
+        pcs[-1] = step
     else:
-        onsets, pcs = np.r_[onsets, last_bar], np.r_[pcs, root]
+        onsets, pcs = np.r_[onsets, approach + SUBDIVISIONS], np.r_[pcs, step]  # on the last beat
+    onsets, pcs = np.r_[onsets, last_bar], np.r_[pcs, root]
     start = int(piece.pitches[0]) if len(piece.pitches) else 76
     return Piece(onsets, pcs, _pitches(pcs, start, low, high), chords, piece.n_frames)
 
@@ -243,6 +272,21 @@ def generate_form(rhythm: RhythmModel, chord_chain: MarkovChain, note_hmm: HMM, 
             p = new_phrase(list(prev.beat_chords), int(prev.pitch_classes[-1]), int(prev.pitches[-1]))
             labels.append(part)
         if last:
-            p = cadence(p, home=int(a_chords[0]), low=low, high=high)
+            p = cadence(p, int(a_chords[0]), note_hmm, rng, low, high)
         phrases.append(p)
     return concat(phrases), labels
+
+
+def ring_out(lead: list[Note], chords: list[tuple[float, float, int]], seconds: float = 4.0
+             ) -> tuple[list[Note], list[tuple[float, float, int]]]:
+    """Hold the final note and the final chord `seconds` longer, whatever the tempo
+
+    At fast tempos the last bar lasts only ar. 2 s, too short for an ending to settle
+    """
+    if lead:
+        last = lead[-1]
+        lead = lead[:-1] + [Note(last.start, last.end + seconds, last.pitch, last.velocity)]
+    if chords:
+        start, end, symbol = chords[-1]
+        chords = chords[:-1] + [(start, end + seconds, symbol)]
+    return lead, chords

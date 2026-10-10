@@ -9,15 +9,18 @@ from hmmusic.generate import (
     cadence,
     chord_changes,
     concat,
+    dominant_of,
     generate,
     generate_form,
     loop_score,
+    ring_out,
     sample_beat_chords,
     sample_notes,
     vary,
 )
 from hmmusic.hmm import HMM
 from hmmusic.markov import MarkovChain
+from hmmusic.midi import Note
 
 
 def test_rhythm_counts():
@@ -140,12 +143,38 @@ def test_vary_keeps_the_start():
     assert v.pitch_classes[:4].tolist() == p.pitch_classes[:4].tolist()  # onsets before frame 16
 
 
+def test_dominant_of():
+    assert dominant_of(0) == 14  # C -> G
+    assert dominant_of(19) == 8  # A minor -> E major
+
+
 def test_cadence():
-    c = cadence(_piece(), home=19)  # A minor
+    rng = np.random.default_rng(0)
+    hmm = HMM.random(25, 12, rng, emission_order=1)
+    c = cadence(_piece(), home=19, note_hmm=hmm, rng=rng)  # A minor
     assert c.beat_chords[-4:].tolist() == [19] * 4
-    assert c.pitch_classes[-1] == 9  # root of A minor
-    assert c.onsets.max() < 64 - 2 * 4 + 1  # nothing in the second half of the last bar
-    assert c.onsets[-1] >= 48  # the final note is in the last bar
+    assert c.beat_chords[-6:-4].tolist() == [8, 8]  # E major before the end
+    assert c.beat_chords[:-6].tolist() == _piece().beat_chords[:-6].tolist()
+    assert c.onsets[-1] == 48 and c.pitch_classes[-1] == 9  # root A on the downbeat of the last bar
+    assert c.pitch_classes[-2] == 11  # B, a step above
+    assert c.pitches[-2] - c.pitches[-1] == 2  # falls by a whole step
+    assert (c.onsets > 48).sum() == 0  # nothing after the final note
+
+
+def test_cadence_adds_an_approach_note_when_the_dominant_is_empty():
+    p = Piece(onsets=np.array([0, 4]), pitch_classes=np.array([4, 2]), pitches=np.array([76, 74]),
+              beat_chords=np.zeros(16, int), n_frames=64)
+    c = cadence(p, home=0, note_hmm=HMM.random(25, 12, np.random.default_rng(0), emission_order=1),
+                rng=np.random.default_rng(0))
+    assert c.onsets.tolist() == [0, 4, 44, 48]  # step on the last beat of bar 3, root on bar 4
+    assert c.pitch_classes.tolist() == [4, 2, 2, 0]
+
+
+def test_last_note_held_to_the_end():
+    p = Piece(onsets=np.array([0, 48]), pitch_classes=np.array([4, 0]), pitches=np.array([76, 72]),
+              beat_chords=np.zeros(16, int), n_frames=64)
+    notes = p.lead_notes(bpm=60)  # one 16th = 0.25 s
+    assert notes[-1].start == 12.0 and notes[-1].end == 16.0
 
 
 def test_concat():
@@ -168,3 +197,13 @@ def test_generate_form():
     home = piece.beat_chords[0]
     assert piece.beat_chords[-4:].tolist() == [home] * 4
     assert piece.pitch_classes[-1] == home // 2
+    assert piece.onsets[-1] == piece.n_frames - 16  # final note on the downbeat of the last bar
+
+
+def test_ring_out():
+    lead = [Note(0.0, 1.0, 72, 80), Note(1.0, 2.0, 74, 80)]
+    chords = [(0.0, 1.0, 0), (1.0, 2.0, 14)]
+    new_lead, new_chords = ring_out(lead, chords, seconds=3.0)
+    assert new_lead[0] == lead[0] and new_lead[1] == Note(1.0, 5.0, 74, 80)
+    assert new_chords == [(0.0, 1.0, 0), (1.0, 5.0, 14)]
+    assert ring_out([], [], 3.0) == ([], [])

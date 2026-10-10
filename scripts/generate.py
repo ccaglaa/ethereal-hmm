@@ -6,8 +6,11 @@ then writes outputs/ethereal_seed<k>.wav and .mid (tracks LEAD and PAD, open the
 With --form=AABA (default) the piece is made of 4-bar phrases that come back, varied, with a final
 cadence; --form=none samples freely (the M3 first version). File names end in _<form>
 
-Usage: python scripts/generate.py [--seeds=0,1,2] [--form=AABA] [--bars=16 (form none only)] [--bpm=60]
-       [--root=../POP909-Dataset/POP909]
+Tempo: --bpm=99-136 (default) draws a tempo in that range for each seed, --bpm=110 fixes it
+Sound: --preset=airy (default), dreamy, glass or pulse; --preset=all renders the same notes once per preset
+
+Usage: python scripts/generate.py [--seeds=0,1,2] [--form=AABA] [--bars=16 (form none only)] [--bpm=99-136]
+       [--preset=airy] [--root=../POP909-Dataset/POP909]
 """
 
 import sys
@@ -16,19 +19,20 @@ from pathlib import Path
 import numpy as np
 
 from hmmusic.frames import N_CHORDS, N_OBS, beat_chords, chord_name, note_sequences, onset_phases, split_songs, to_frames
-from hmmusic.generate import RhythmModel, generate, generate_form
+from hmmusic.generate import RhythmModel, generate, generate_form, ring_out
 from hmmusic.hmm import HMM
 from hmmusic.markov import MarkovChain
 from hmmusic.midi import Track, write_midi
 from hmmusic.pop909 import load_song, song_folders
-from hmmusic.synth import pad_notes, render, write_wav
+from hmmusic.synth import PRESETS, pad_notes, render, write_wav
 
 opts = dict(a[2:].split("=", 1) for a in sys.argv[1:] if a.startswith("--"))
 root = Path(opts.get("root", "../POP909-Dataset/POP909"))
 seeds = [int(s) for s in opts.get("seeds", "0,1,2").split(",")]
 n_bars = int(opts.get("bars", 16))
 form = opts.get("form", "AABA")
-bpm = float(opts.get("bpm", 60))
+bpm_option = opts.get("bpm", "99-136")
+preset_names = sorted(PRESETS) if opts.get("preset") == "all" else [opts.get("preset", "airy")]
 
 frames = {f.song_id: f for f in (to_frames(load_song(d)) for d in song_folders(root)) if f is not None}
 train_ids, val_ids, _ = split_songs(list(frames), seed=0)
@@ -55,18 +59,24 @@ out = Path("outputs")
 out.mkdir(exist_ok=True)
 for seed in seeds:
     rng = np.random.default_rng(seed)
+    if "-" in bpm_option:
+        low, high = (int(x) for x in bpm_option.split("-"))
+        bpm = int(rng.integers(low, high + 1))
+    else:
+        bpm = float(bpm_option)
     if form == "none":
         piece, labels = generate(rhythm, chord_chain, note_hmm, n_bars, rng), []
     else:
         piece, labels = generate_form(rhythm, chord_chain, note_hmm, rng, form=form)
-    lead = piece.lead_notes(bpm)
-    chords = piece.chord_segments(bpm)
+    lead, chords = ring_out(piece.lead_notes(bpm), piece.chord_segments(bpm), seconds=4.0)
     name = f"ethereal_seed{seed}_{form}"
     write_midi(out / f"{name}.mid", [Track("LEAD", lead), Track("PAD", pad_notes(chords))], bpm=bpm)
-    write_wav(out / f"{name}.wav", render(lead, chords, bpm, seed=seed))
+    for preset in preset_names:
+        suffix = "" if len(preset_names) == 1 and preset == "airy" else f"_{preset}"
+        write_wav(out / f"{name}{suffix}.wav", render(lead, chords, bpm, PRESETS[preset], seed=seed))
     n = len(piece.beat_chords) // 4
     bars = [" ".join(chord_name(c) for c in piece.beat_chords[4 * b : 4 * b + 4]) for b in range(n)]
-    print(f"\nseed {seed}: {len(lead)} notes, {n} bars at {bpm:.0f} bpm -> {out}/{name}.wav")
+    print(f"\nseed {seed}: {len(lead)} notes, {n} bars at {bpm:.0f} bpm, preset {', '.join(preset_names)} -> {out}/{name}*.wav")
     if labels:
         for i, label in enumerate(labels):
             print(f"  {label:<4} " + " | ".join(bars[4 * i : 4 * i + 4]))

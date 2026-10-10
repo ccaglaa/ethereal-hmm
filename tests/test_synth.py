@@ -6,10 +6,13 @@ import pytest
 
 from hmmusic.midi import Note
 from hmmusic.synth import (
+    PRESETS,
     Tone,
+    arpeggio_notes,
     chord_pitch_classes,
     convolve_fft,
     envelope,
+    merge_chords,
     midi_to_hz,
     pad_notes,
     ping_pong_delay,
@@ -124,5 +127,28 @@ def test_render_full_mix():
     lead = [Note(0.0, 0.5, 72, 90), Note(0.5, 1.5, 76, 90)]
     audio = render(lead, [(0.0, 1.5, 0)], bpm=70, tail=1.0, sr=SR)
     assert audio.shape == (int(2.5 * SR), 2)
+    assert np.isfinite(audio).all()
+    assert np.abs(audio).max() == pytest.approx(0.89, abs=1e-6)
+
+
+def test_merge_chords():
+    assert merge_chords([(0.0, 1.0, 0), (1.0, 2.0, 0), (2.0, 3.0, 19), (3.0, 4.0, 0)]) == [
+        (0.0, 2.0, 0), (2.0, 3.0, 19), (3.0, 4.0, 0)]
+
+
+def test_arpeggio_notes():
+    # 2 beats of C major at 60 bpm: 4 eighths of 0.5 s, pattern goes up through the voicing
+    notes = arpeggio_notes([(0.0, 1.0, 0), (1.0, 2.0, 0)], bpm=60)
+    assert [n.start for n in notes] == [0.0, 0.5, 1.0, 1.5]
+    pitches = [n.pitch for n in notes]
+    assert sorted({p % 12 for p in pitches}) == [0, 4, 7]
+    assert pitches == sorted(pitches)  # first four steps of the pattern rise
+    assert arpeggio_notes([(0.0, 1.0, 24)], bpm=60) == []
+
+
+@pytest.mark.parametrize("name", sorted(PRESETS))
+def test_presets_render(name):
+    lead = [Note(0.0, 0.5, 72, 90), Note(0.5, 1.5, 76, 90)]
+    audio = render(lead, [(0.0, 1.5, 0)], bpm=120, preset=PRESETS[name], tail=1.0, sr=SR)
     assert np.isfinite(audio).all()
     assert np.abs(audio).max() == pytest.approx(0.89, abs=1e-6)

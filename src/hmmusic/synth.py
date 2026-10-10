@@ -11,7 +11,7 @@ and the reverb is a convolution with a synthetic impulse response (decaying nois
 from __future__ import annotations
 
 import wave
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -48,6 +48,46 @@ class Tone:
 LEAD = Tone(harmonics=(1.0, 0.25, 0.08, 0.03), detune=(-4.0, 4.0), attack=0.08, release=1.2,
             vibrato_depth=12.0, vibrato_rate=4.5, vibrato_delay=0.35)
 PAD = Tone(harmonics=tuple(1 / k**2.5 for k in range(1, 6)), detune=(-9.0, 0.0, 9.0), attack=1.6, release=2.5)  # dark: few, quiet harmonics
+PLUCK = Tone(harmonics=(1.0, 0.4, 0.15, 0.06), detune=(-6.0, 6.0), attack=0.005, release=0.7)  # arpeggio notes
+
+
+@dataclass(frozen=True)
+class Preset:
+    """Everything that shapes the sound, so the same notes can be rendered several ways
+
+    pad_attack_beats   pad attack in beats, capped by the pad's own attack in seconds: at fast tempos
+                       a fixed 1.6 s attack would still be fading in when the next chord comes
+    shimmer            level of a copy of the lead one octave higher (0 = off), a glassy halo
+    arpeggio           level of the chord tones played as 8th notes (0 = off), gives a pulse
+    """
+
+    lead: Tone = LEAD
+    pad: Tone = PAD
+    pad_level: float = 0.35
+    pad_attack_beats: float = 1.5
+    reverb_rt60: float = 4.5
+    reverb_mix: float = 0.45
+    delay_feedback: float = 0.45
+    shimmer: float = 0.0
+    arpeggio: float = 0.0
+
+
+PRESETS = {
+    # the M3 sound: soft lead, dark pad, long reverb
+    "airy": Preset(),
+    # darker and wider: softer lead, slower pad, longer and wetter reverb, more echoes
+    "dreamy": Preset(
+        lead=replace(LEAD, harmonics=(1.0, 0.12, 0.03), release=1.8, vibrato_depth=8.0),
+        pad=replace(PAD, release=4.0), pad_level=0.45, pad_attack_beats=2.5,
+        reverb_rt60=7.0, reverb_mix=0.6, delay_feedback=0.55),
+    # brighter, bell like lead with an octave shimmer, lighter pad
+    "glass": Preset(
+        lead=replace(LEAD, harmonics=(1.0, 0.45, 0.25, 0.15, 0.08), release=1.5),
+        pad_level=0.25, shimmer=0.35, reverb_mix=0.5),
+    # for faster tempos: chord tones as 8th notes over a quieter pad, shorter reverb
+    "pulse": Preset(pad_level=0.2, pad_attack_beats=1.0, reverb_rt60=3.0, reverb_mix=0.35,
+                    delay_feedback=0.35, arpeggio=0.3),
+}
 
 
 def envelope(n_hold: int, n_release: int, n_attack: int) -> np.ndarray:
@@ -131,19 +171,24 @@ def voice_chord(pcs: list[int], previous: list[int] | None, low: int = 52, high:
     return best
 
 
-def pad_notes(chords: list[tuple[float, float, int]], velocity: int = 70, bass: bool = True) -> list[Note]:
-    """(start, end, chord symbol) segments -> pad notes, consecutive equal chords merged
-
-    Chord symbol 24 (no chord) plays nothing
-    """
+def merge_chords(chords: list[tuple[float, float, int]]) -> list[tuple[float, float, int]]:
+    """Join consecutive segments with the same chord (the generator gives one segment per beat)"""
     merged: list[list] = []
     for start, end, symbol in chords:
         if merged and merged[-1][2] == symbol and abs(merged[-1][1] - start) < 1e-6:
             merged[-1][1] = end
         else:
             merged.append([start, end, symbol])
+    return [tuple(m) for m in merged]
+
+
+def pad_notes(chords: list[tuple[float, float, int]], velocity: int = 70, bass: bool = True) -> list[Note]:
+    """(start, end, chord symbol) segments -> pad notes, consecutive equal chords merged
+
+    Chord symbol 24 (no chord) plays nothing
+    """
     notes, previous = [], None
-    for start, end, symbol in merged:
+    for start, end, symbol in merge_chords(chords):
         if symbol >= 24:
             continue
         voicing = voice_chord(chord_pitch_classes(symbol), previous)
@@ -151,6 +196,23 @@ def pad_notes(chords: list[tuple[float, float, int]], velocity: int = 70, bass: 
         notes += [Note(start, end, p, velocity) for p in voicing]
         if bass:
             notes.append(Note(start, end, 36 + symbol // 2, velocity - 15))  # root, octave C2 to B2
+    return notes
+
+
+def arpeggio_notes(chords: list[tuple[float, float, int]], bpm: float, velocity: int = 70) -> list[Note]:
+    """Chord tones as 8th notes going up and down (root third fifth octave fifth third ...)"""
+    eighth = 30.0 / bpm
+    notes, previous = [], None
+    for start, end, symbol in merge_chords(chords):
+        if symbol >= 24:
+            continue
+        voicing = voice_chord(chord_pitch_classes(symbol), previous, low=60, high=79)
+        previous = voicing
+        pattern = voicing + [voicing[0] + 12] + voicing[1:][::-1]  # up then down
+        t, i = start, 0
+        while t < end - 1e-9:
+            notes.append(Note(t, min(t + eighth, end), pattern[i % len(pattern)], velocity))
+            t, i = t + eighth, i + 1
     return notes
 
 
@@ -210,17 +272,30 @@ def master(stereo: np.ndarray, peak: float = 0.89, fade: float = 2.0, sr: int = 
     return y * peak / (np.abs(y).max() + 1e-12)
 
 
-def render(lead: list[Note], chords: list[tuple[float, float, int]], bpm: float, tail: float = 5.0,
-           reverb_mix: float = 0.45, seed: int = 0, sr: int = SR) -> np.ndarray:
+def render(lead: list[Note], chords: list[tuple[float, float, int]], bpm: float, preset: Preset | None = None,
+           tail: float = 5.0, seed: int = 0, sr: int = SR) -> np.ndarray:
     """Full mix as stereo float in [-1, 1], shape (n, 2)"""
+    preset = preset or PRESETS["airy"]
+    beat = 60.0 / bpm
     end = max([n.end for n in lead] + [c[1] for c in chords] + [0.0]) + tail
-    lead_dry = render_notes(lead, LEAD, end, sr, seed)
-    lead_wide = ping_pong_delay(lead_dry, delay=0.75 * 60 / bpm, sr=sr)  # dotted eighth
-    pad = render_notes(pad_notes(chords), PAD, end, sr, seed + 1)
-    dry = 1.0 * lead_wide + 0.35 * pad[:, None]
-    wet = convolve_fft(dry, reverb_impulse(sr=sr, seed=seed))
+
+    lead_dry = render_notes(lead, preset.lead, end, sr, seed)
+    if preset.shimmer > 0:
+        octave_up = [Note(n.start, n.end, n.pitch + 12, n.velocity) for n in lead]
+        lead_dry = lead_dry + preset.shimmer * render_notes(octave_up, preset.lead, end, sr, seed + 2)
+    lead_wide = ping_pong_delay(lead_dry, delay=0.75 * beat, feedback=preset.delay_feedback, sr=sr)  # dotted 8th
+
+    pad_tone = replace(preset.pad, attack=min(preset.pad.attack, preset.pad_attack_beats * beat))
+    pad = render_notes(pad_notes(chords), pad_tone, end, sr, seed + 1)
+    dry = lead_wide + preset.pad_level * pad[:, None]
+    if preset.arpeggio > 0:
+        arp = render_notes(arpeggio_notes(chords, bpm), PLUCK, end, sr, seed + 3)
+        dry = dry + preset.arpeggio * ping_pong_delay(arp, delay=0.75 * beat, feedback=0.3, sr=sr)
+
+    wet = convolve_fft(dry, reverb_impulse(rt60=preset.reverb_rt60, seconds=max(5.0, 1.2 * preset.reverb_rt60),
+                                           sr=sr, seed=seed))
     wet *= np.abs(dry).max() / (np.abs(wet).max() + 1e-12)  # bring the wet signal to a similar level
-    return master((1 - reverb_mix) * dry + reverb_mix * wet, sr=sr)
+    return master((1 - preset.reverb_mix) * dry + preset.reverb_mix * wet, sr=sr)
 
 
 def write_wav(path: str | Path, stereo: np.ndarray, sr: int = SR) -> None:
