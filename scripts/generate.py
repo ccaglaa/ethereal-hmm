@@ -3,7 +3,11 @@
 Trains the three models on the training songs, picks the chord chain order on validation songs,
 then writes outputs/ethereal_seed<k>.wav and .mid (tracks LEAD and PAD, open the MIDI in GarageBand)
 
-Usage: python scripts/generate.py [--seeds=0,1,2] [--bars=16] [--bpm=60] [--root=../POP909-Dataset/POP909]
+With --form=AABA (default) the piece is made of 4-bar phrases that come back, varied, with a final
+cadence; --form=none samples freely (the M3 first version). File names end in _<form>
+
+Usage: python scripts/generate.py [--seeds=0,1,2] [--form=AABA] [--bars=16 (form none only)] [--bpm=60]
+       [--root=../POP909-Dataset/POP909]
 """
 
 import sys
@@ -12,7 +16,7 @@ from pathlib import Path
 import numpy as np
 
 from hmmusic.frames import N_CHORDS, N_OBS, beat_chords, chord_name, note_sequences, onset_phases, split_songs, to_frames
-from hmmusic.generate import RhythmModel, generate
+from hmmusic.generate import RhythmModel, generate, generate_form
 from hmmusic.hmm import HMM
 from hmmusic.markov import MarkovChain
 from hmmusic.midi import Track, write_midi
@@ -23,6 +27,7 @@ opts = dict(a[2:].split("=", 1) for a in sys.argv[1:] if a.startswith("--"))
 root = Path(opts.get("root", "../POP909-Dataset/POP909"))
 seeds = [int(s) for s in opts.get("seeds", "0,1,2").split(",")]
 n_bars = int(opts.get("bars", 16))
+form = opts.get("form", "AABA")
 bpm = float(opts.get("bpm", 60))
 
 frames = {f.song_id: f for f in (to_frames(load_song(d)) for d in song_folders(root)) if f is not None}
@@ -49,11 +54,21 @@ note_hmm = HMM.fit_supervised([s[0] for s in train_notes], [s[1] for s in train_
 out = Path("outputs")
 out.mkdir(exist_ok=True)
 for seed in seeds:
-    piece = generate(rhythm, chord_chain, note_hmm, n_bars, np.random.default_rng(seed))
+    rng = np.random.default_rng(seed)
+    if form == "none":
+        piece, labels = generate(rhythm, chord_chain, note_hmm, n_bars, rng), []
+    else:
+        piece, labels = generate_form(rhythm, chord_chain, note_hmm, rng, form=form)
     lead = piece.lead_notes(bpm)
     chords = piece.chord_segments(bpm)
-    write_midi(out / f"ethereal_seed{seed}.mid", [Track("LEAD", lead), Track("PAD", pad_notes(chords))], bpm=bpm)
-    write_wav(out / f"ethereal_seed{seed}.wav", render(lead, chords, bpm, seed=seed))
-    bars = [" ".join(chord_name(c) for c in piece.beat_chords[4 * b : 4 * b + 4]) for b in range(n_bars)]
-    print(f"\nseed {seed}: {len(lead)} notes, {n_bars} bars at {bpm:.0f} bpm -> {out}/ethereal_seed{seed}.wav")
-    print("  chords: " + " | ".join(bars[:8]))
+    name = f"ethereal_seed{seed}_{form}"
+    write_midi(out / f"{name}.mid", [Track("LEAD", lead), Track("PAD", pad_notes(chords))], bpm=bpm)
+    write_wav(out / f"{name}.wav", render(lead, chords, bpm, seed=seed))
+    n = len(piece.beat_chords) // 4
+    bars = [" ".join(chord_name(c) for c in piece.beat_chords[4 * b : 4 * b + 4]) for b in range(n)]
+    print(f"\nseed {seed}: {len(lead)} notes, {n} bars at {bpm:.0f} bpm -> {out}/{name}.wav")
+    if labels:
+        for i, label in enumerate(labels):
+            print(f"  {label:<4} " + " | ".join(bars[4 * i : 4 * i + 4]))
+    else:
+        print("  chords: " + " | ".join(bars[:8]))

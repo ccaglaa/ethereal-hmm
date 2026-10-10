@@ -7,6 +7,8 @@ Three small models, each trained on the training songs
 
 Together this is an HMM whose hidden chord moves once per beat and emits a note at each onset
 Sampling order: rhythm -> onset times; chords -> one chord per beat; notes -> pitch at each onset
+
+generate_form adds structure on top: phrases that come back (AABA), varied, with a final cadence
 """
 
 from __future__ import annotations
@@ -21,6 +23,7 @@ from hmmusic.hmm import HMM
 from hmmusic.markov import MarkovChain
 from hmmusic.midi import Note
 
+HOME_CHORDS = (0, 19)  # C major, A minor
 MAX_GAP = 16  # longest gap between onsets, in 16ths (1 bar of 4/4); longer gaps are clipped
 
 
@@ -79,34 +82,56 @@ class Piece:
         return [(i * beat, (i + 1) * beat, int(c)) for i, c in enumerate(self.beat_chords)]
 
 
-def sample_beat_chords(chain: MarkovChain, n_beats: int, rng: np.random.Generator) -> np.ndarray:
-    """Chord per beat from the chain, never the no-chord symbol (resampled if drawn)"""
+def sample_beat_chords(chain: MarkovChain, n_beats: int, rng: np.random.Generator,
+                       context: list[int] | None = None) -> np.ndarray:
+    """Chord per beat from the chain, never the no-chord symbol (resampled if drawn)
+
+    context: chords that come just before, so a new section continues the previous one
+    """
     probs = chain.probs()
-    context = [chain.start] * chain.order
+    ctx = _chain_context(chain, context)
     out = np.empty(n_beats, dtype=int)
     for t in range(n_beats):
-        p = probs[tuple(context)].copy()
+        p = probs[tuple(ctx)].copy()
         p[NO_CHORD] = 0.0
         out[t] = rng.choice(N_CHORDS, p=p / p.sum())
         if chain.order:
-            context = context[1:] + [int(out[t])]
+            ctx = ctx[1:] + [int(out[t])]
     return out
 
 
-def sample_notes(emission: np.ndarray, chords: np.ndarray, rng: np.random.Generator) -> np.ndarray:
-    """Pitch class at each onset from B[chord, previous pitch class], B of shape (K, V + 1, V)"""
+def _chain_context(chain: MarkovChain, previous: list[int] | None) -> list[int]:
+    """Last chain.order chords, padded on the left with START when there are fewer"""
+    previous = [int(c) for c in (previous or [])][-chain.order :] if chain.order else []
+    return [chain.start] * (chain.order - len(previous)) + previous
+
+
+def sample_notes(emission: np.ndarray, chords: np.ndarray, rng: np.random.Generator,
+                 previous: int | None = None) -> np.ndarray:
+    """Pitch class at each onset from B[chord, previous pitch class], B of shape (K, V + 1, V)
+
+    previous: pitch class just before the first onset (None = start of a melody)
+    """
     V = emission.shape[-1]
     out = np.empty(len(chords), dtype=int)
-    previous = V  # "no previous note" row
+    prev = V if previous is None else int(previous)  # row V = "no previous note"
     for t, c in enumerate(chords):
-        out[t] = rng.choice(V, p=emission[c, previous])
-        previous = out[t]
+        out[t] = rng.choice(V, p=emission[c, prev])
+        prev = out[t]
     return out
+
+
+def _pitches(pcs: np.ndarray, start: int, low: int, high: int) -> np.ndarray:
+    out, previous = [], start
+    for pc in pcs:
+        previous = nearest_pitch(int(pc), previous, low, high)
+        out.append(previous)
+    return np.array(out, dtype=int)
 
 
 def generate(rhythm: RhythmModel, chord_chain: MarkovChain, note_hmm: HMM, n_bars: int,
              rng: np.random.Generator, low: int = 67, high: int = 86, start_pitch: int = 76) -> Piece:
-    """Sample a piece of n_bars bars of 4/4; lead range G4 to D6 by default (high and airy)"""
+    """Sample a piece of n_bars bars of 4/4, no form; lead range G4 to D6 by default (high and airy)"""
     if note_hmm.emission_order != 1:
         raise ValueError("the note model must be an autoregressive (ar1) HMM")
     n_beats = 4 * n_bars
@@ -114,8 +139,110 @@ def generate(rhythm: RhythmModel, chord_chain: MarkovChain, note_hmm: HMM, n_bar
     onsets = rhythm.sample_onsets(n_frames, rng)
     beat_chords = sample_beat_chords(chord_chain, n_beats, rng)
     pcs = sample_notes(note_hmm.B, beat_chords[onsets // SUBDIVISIONS], rng)
-    pitches, previous = [], start_pitch
-    for pc in pcs:
-        previous = nearest_pitch(int(pc), previous, low, high)
-        pitches.append(previous)
-    return Piece(onsets, pcs, np.array(pitches), beat_chords, n_frames)
+    return Piece(onsets, pcs, _pitches(pcs, start_pitch, low, high), beat_chords, n_frames)
+
+
+# ---- form: phrases that come back ----
+
+def loop_score(chain: MarkovChain, chords: np.ndarray) -> float:
+    """Log probability that the chain goes from the end of this progression back to its first chord
+
+    High = the progression can repeat naturally (its last chords lead to its first)
+    """
+    ctx = _chain_context(chain, list(chords))
+    return float(np.log(chain.probs()[tuple(ctx)][chords[0]]))
+
+
+def chord_changes(chords: np.ndarray) -> int:
+    """Number of beats where the chord differs from the previous beat"""
+    return int((chords[1:] != chords[:-1]).sum())
+
+
+def vary(piece: Piece, note_hmm: HMM, keep_beats: int, rng: np.random.Generator,
+         low: int = 67, high: int = 86, start_pitch: int = 76) -> Piece:
+    """Same rhythm and chords; notes before keep_beats unchanged, the rest sampled again
+
+    Like a musical answer: the phrase starts the same way and ends differently
+    """
+    keep = piece.onsets < keep_beats * SUBDIVISIONS
+    pcs = piece.pitch_classes.copy()
+    chords = piece.chord_at_onsets()
+    previous = int(pcs[keep][-1]) if keep.any() else None
+    pcs[~keep] = sample_notes(note_hmm.B, chords[~keep], rng, previous)
+    return Piece(piece.onsets.copy(), pcs, _pitches(pcs, start_pitch, low, high),
+                 piece.beat_chords.copy(), piece.n_frames)
+
+
+def cadence(piece: Piece, home: int, low: int = 67, high: int = 86) -> Piece:
+    """End on the home chord: last bar on the home chord, last note = its root, held to the end"""
+    chords = piece.beat_chords.copy()
+    chords[-4:] = home
+    root = home // 2
+    last_bar = piece.n_frames - 4 * SUBDIVISIONS
+    # drop notes in the second half of the last bar, keep one final note on the root
+    keep = piece.onsets < last_bar + 2 * SUBDIVISIONS
+    onsets, pcs = piece.onsets[keep].copy(), piece.pitch_classes[keep].copy()
+    if onsets[-1] >= last_bar:
+        pcs[-1] = root
+    else:
+        onsets, pcs = np.r_[onsets, last_bar], np.r_[pcs, root]
+    start = int(piece.pitches[0]) if len(piece.pitches) else 76
+    return Piece(onsets, pcs, _pitches(pcs, start, low, high), chords, piece.n_frames)
+
+
+def concat(pieces: list[Piece]) -> Piece:
+    onsets, pcs, pitches, chords, offset = [], [], [], [], 0
+    for p in pieces:
+        onsets.append(p.onsets + offset)
+        pcs.append(p.pitch_classes)
+        pitches.append(p.pitches)
+        chords.append(p.beat_chords)
+        offset += p.n_frames
+    return Piece(np.concatenate(onsets), np.concatenate(pcs), np.concatenate(pitches), np.concatenate(chords), offset)
+
+
+def generate_form(rhythm: RhythmModel, chord_chain: MarkovChain, note_hmm: HMM, rng: np.random.Generator,
+                  form: str = "AABA", phrase_bars: int = 4, candidates: int = 50, min_changes: int = 3,
+                  low: int = 67, high: int = 86, start_pitch: int = 76) -> tuple[Piece, list[str]]:
+    """A piece made of phrases: A = the theme, B = contrast, repeated A = varied, last A = cadence
+
+    A: its chords are the most loopable of `candidates` sampled progressions, starting at home if possible
+    Repeats of A keep the first half of the phrase and answer differently in the second half
+    Returns the piece and the label of each phrase (A, A', B, A'' ...)
+    """
+    if note_hmm.emission_order != 1:
+        raise ValueError("the note model must be an autoregressive (ar1) HMM")
+    n_beats = 4 * phrase_bars
+    n_frames = n_beats * SUBDIVISIONS
+
+    def new_phrase(context, previous_pc, start):
+        onsets = rhythm.sample_onsets(n_frames, rng)
+        chords = sample_beat_chords(chord_chain, n_beats, rng, context)
+        pcs = sample_notes(note_hmm.B, chords[onsets // SUBDIVISIONS], rng, previous_pc)
+        return Piece(onsets, pcs, _pitches(pcs, start, low, high), chords, n_frames)
+
+    options = [sample_beat_chords(chord_chain, n_beats, rng) for _ in range(candidates)]
+    # prefer progressions with at least min_changes chord changes (the most loopable ones are often
+    # static: staying on a chord is the likeliest move), then starting on a home chord
+    # (C or Am, as every song is in C major or A minor), then the most loopable
+    a_chords = max(options, key=lambda c: (chord_changes(c) >= min_changes, int(c[0]) in HOME_CHORDS,
+                                           loop_score(chord_chain, c)))
+    onsets = rhythm.sample_onsets(n_frames, rng)
+    pcs = sample_notes(note_hmm.B, a_chords[onsets // SUBDIVISIONS], rng)
+    theme = Piece(onsets, pcs, _pitches(pcs, start_pitch, low, high), a_chords, n_frames)
+
+    phrases, labels, seen_a = [], [], 0
+    for i, part in enumerate(form):
+        last = i == len(form) - 1
+        if part == "A":
+            p = theme if seen_a == 0 else vary(theme, note_hmm, n_beats // 2, rng, low, high, start_pitch)
+            labels.append("A" + "'" * seen_a)
+            seen_a += 1
+        else:
+            prev = phrases[-1]
+            p = new_phrase(list(prev.beat_chords), int(prev.pitch_classes[-1]), int(prev.pitches[-1]))
+            labels.append(part)
+        if last:
+            p = cadence(p, home=int(a_chords[0]), low=low, high=high)
+        phrases.append(p)
+    return concat(phrases), labels

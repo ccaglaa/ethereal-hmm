@@ -131,23 +131,39 @@ An HMM whose hidden chord moves once per beat (chords change on beats, as in the
 - notes: pitch class from `B[chord, previous pitch class]`, the emission table of the ar1 chord HMM of M2;
   octave = closest to the previous note between G4 and D6
 
-`python scripts/generate.py` writes `outputs/ethereal_seed<k>.wav` and `.mid` (tracks LEAD and PAD).
+`python scripts/generate.py` writes `outputs/ethereal_seed<k>_AABA.wav` and `.mid` (tracks LEAD and PAD);
+`--form=none` for free sampling, or another form such as `--form=ABAB`:
+every A is the theme (varied after the first), every other letter is a new contrasting phrase.
+
+### Form (`generate_form`)
+
+Free sampling never repeats anything, while real songs do. `generate_form` arranges 4-bar phrases as AABA:
+- A: the theme. Its chords are picked among 50 sampled progressions: at least 3 chord changes (the most
+  loopable progressions are otherwise static, staying on a chord is always the likeliest move; real songs
+  change ar. 5 times per 4 bars), starting on a home chord (C or Am), then the highest probability of
+  going from its last chords back to its first
+- A', A'': same rhythm and chords, first 2 bars identical, notes of the last 2 bars sampled again (an answer)
+- B: new rhythm and chords, continuing from where A ends
+- the last phrase ends on the home chord, last note = its root
 
 ### Evaluation (`python scripts/evaluate_generation.py`)
 
 50 generated pieces of 16 bars vs 160 test phrases. The control uses the same rhythm and chords but an
-order 2 Markov chain for notes, so the notes ignore the chord.
+order 2 Markov chain for notes, so the notes ignore the chord. "Repeated" = share of 8-note pitch class
+patterns already heard earlier in the same piece (real songs: their first 90 notes, about 16 bars).
 
-| | chord tone | repeat | step 1-2 | leap 3+ | notes per bar |
-|---|---|---|---|---|---|
-| test songs | 66.4% | 25.0% | 42.1% | 32.8% | 5.2 |
-| chord HMM (ours) | **61.6%** | 22.4% | 45.3% | 32.3% | 5.6 |
-| Markov 2, no chords (control) | 45.4% | 24.8% | 44.7% | 30.5% | 5.6 |
+| | chord tone | repeat | step 1-2 | leap 3+ | notes per bar | repeated |
+|---|---|---|---|---|---|---|
+| test songs | 66.4% | 25.0% | 42.1% | 32.8% | 5.2 | 21.2% |
+| chord HMM, free | 61.6% | 22.4% | 45.3% | 32.3% | 5.6 | 0.0% |
+| Markov 2, no chords (control) | 45.4% | 24.8% | 44.7% | 30.5% | 5.6 | 0.1% |
+| chord HMM + AABA form | **65.3%** | 22.3% | 43.1% | 34.6% | 5.6 | **12.2%** |
 
-The hidden chords do their job: 62% of generated notes are tones of the current chord, close to real
-melodies (66%) and far above notes that ignore the chord (45%). Step sizes match the real melodies.
-Not measured: long range structure. Nothing repeats a phrase or returns to a theme, which real songs do;
-listening makes this obvious after a few bars.
+- The hidden chords do their job: generated notes are chord tones far more often than notes that ignore
+  the chord (62 to 65% vs 45%), close to real melodies (66%). Step sizes match the real melodies.
+- Free sampling has no memory beyond a few notes: 0% repeated patterns. Form brings it to 12%, about
+  half of real songs (21%), without hurting harmony.
+- Not measured: whether it sounds good. That needs listening.
 
 ## Setup
 
