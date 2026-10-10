@@ -108,6 +108,47 @@ Consequence for M3: generation uses the HMM with annotated chords as states (ar1
 worse than the best unsupervised model (2.38 vs 2.31 bits) but its hidden states are chords, which is
 exactly what the synth pad needs.
 
+## M3: generation and sound
+
+### Synth (`hmmusic/synth.py`, NumPy only)
+
+- lead: soft additive tone (4 harmonics), two oscillators detuned by +-4 cents, slow vibrato fading in,
+  ping-pong delay on a dotted eighth
+- pad: triads voiced between E3 and C5 with voice leading (each chord moves as little as possible from the
+  previous one), 3 detuned oscillators, 1.6 s attack, 2.5 s release, dark (5 harmonics), plus a soft root bass
+- reverb: convolution (FFT) with a synthetic stereo impulse response, decaying noise, RT60 4.5 s
+- master: soft clip, fades, peak at -1 dBFS, 16 bit stereo WAV with the standard library
+
+`python scripts/render_song.py` plays a real test song (default: the slowest one, 571) through the synth,
+as a reference for the sound.
+
+### Generator (`hmmusic/generate.py`)
+
+An HMM whose hidden chord moves once per beat (chords change on beats, as in the songs) and emits a note at each onset:
+- rhythm: P(gap to next onset | position in the beat, previous gap), gaps of 1 to 16 sixteenths
+- chords: Witten-Bell Markov chain over the chord at each beat; order 4 chosen on validation songs
+  (1.823 / 1.720 / 1.713 / 1.712 bits per beat for orders 1 to 4; higher orders do not fit in memory)
+- notes: pitch class from `B[chord, previous pitch class]`, the emission table of the ar1 chord HMM of M2;
+  octave = closest to the previous note between G4 and D6
+
+`python scripts/generate.py` writes `outputs/ethereal_seed<k>.wav` and `.mid` (tracks LEAD and PAD).
+
+### Evaluation (`python scripts/evaluate_generation.py`)
+
+50 generated pieces of 16 bars vs 160 test phrases. The control uses the same rhythm and chords but an
+order 2 Markov chain for notes, so the notes ignore the chord.
+
+| | chord tone | repeat | step 1-2 | leap 3+ | notes per bar |
+|---|---|---|---|---|---|
+| test songs | 66.4% | 25.0% | 42.1% | 32.8% | 5.2 |
+| chord HMM (ours) | **61.6%** | 22.4% | 45.3% | 32.3% | 5.6 |
+| Markov 2, no chords (control) | 45.4% | 24.8% | 44.7% | 30.5% | 5.6 |
+
+The hidden chords do their job: 62% of generated notes are tones of the current chord, close to real
+melodies (66%) and far above notes that ignore the chord (45%). Step sizes match the real melodies.
+Not measured: long range structure. Nothing repeats a phrase or returns to a theme, which real songs do;
+listening makes this obvious after a few bars.
+
 ## Setup
 
 ```
@@ -124,6 +165,9 @@ python scripts/data_stats.py
 python scripts/markov_baselines.py
 python scripts/hmm_experiments.py
 python scripts/summarize_hmm.py
+python scripts/render_song.py
+python scripts/generate.py
+python scripts/evaluate_generation.py
 ```
 
 `hmm_experiments.py` takes ar. 1.5 h. Add `--quick` for a 3 minute check, or split it over two terminals
@@ -137,4 +181,4 @@ Sampled melodies are written to `outputs/` as MIDI (open them in GarageBand).
 |---|---|---|
 | M1 | Data loading, MIDI reader and writer, representation, Markov chain baselines, held-out likelihood | Done |
 | M2 | HMM from scratch: forward-backward, Viterbi, Baum-Welch, tests against brute force | Done |
-| M3 | Ethereal synth renderer (NumPy to WAV), generation, evaluation and listening | |
+| M3 | Ethereal synth renderer (NumPy to WAV), generation, evaluation and listening | Done |

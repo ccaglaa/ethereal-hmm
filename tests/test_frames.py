@@ -8,8 +8,10 @@ from hmmusic.frames import (
     Frames,
     chord_name,
     chord_symbol,
+    beat_chords,
     key_shift,
     note_sequences,
+    onset_phases,
     phrases,
     split_songs,
     to_frames,
@@ -120,3 +122,24 @@ def test_note_sequences():
     assert pitches.tolist() == [0, 4, 7]
     assert chords.tolist() == [0, 0, 19]
     assert gaps.tolist() == [3, 1, 3]
+
+
+def test_beat_phase_with_first_beat():
+    f = Frames("x", np.array([REST] * 8), np.zeros(8, int), 0, first_beat=2)
+    assert f.beat_phase(np.arange(8)).tolist() == [2, 3, 0, 1, 2, 3, 0, 1]
+
+
+def test_onset_phases_aligned_with_note_sequences():
+    obs = np.array([REST, 0, HOLD, 2, REST, 4, REST, REST, 7])
+    f = Frames("x", obs, np.zeros(len(obs), int), 0)
+    phases = onset_phases(f, min_gap=4)
+    assert [p.tolist() for p in phases] == [[1, 3, 1, 0]]
+    assert len(phases[0]) == len(note_sequences(f, min_gap=4)[0][0])
+
+
+def test_beat_chords_split_at_no_chord():
+    # one chord per frame, read every 4 frames: 0, 0, N, 19, 19, 19, N, 5
+    per_beat = [0, 0, NO_CHORD, 19, 19, 19, NO_CHORD, 5]
+    chord = np.repeat(per_beat, 4)
+    f = Frames("x", np.full(len(chord), REST), chord, 0)
+    assert [r.tolist() for r in beat_chords(f)] == [[0, 0], [19, 19, 19]]  # the single 5 is dropped

@@ -39,6 +39,11 @@ class Frames:
     obs: np.ndarray  # int, one melody symbol per frame
     chord: np.ndarray  # int, one chord per frame
     shift: int  # semitones added to the original pitches to reach C
+    first_beat: int = 0  # frame index of the first beat (> 0 when notes start before it)
+
+    def beat_phase(self, frame: np.ndarray | int) -> np.ndarray | int:
+        """Position of a frame inside its beat: 0 on the beat, 1, 2, 3 for the following 16ths"""
+        return (np.asarray(frame) - self.first_beat) % SUBDIVISIONS
 
 
 def key_shift(label: str) -> int:
@@ -134,7 +139,7 @@ def to_frames(song: Song) -> Frames | None:
     chord[frame_times < chord_starts[0]] = NO_CHORD
     chord[frame_times >= song.chords[-1].end] = NO_CHORD
 
-    return Frames(song.song_id, obs, chord, shift)
+    return Frames(song.song_id, obs, chord, shift, first_beat=-offset)
 
 
 def split_songs(ids: list[str], seed: int = 0, val: float = 0.1, test: float = 0.1) -> tuple[list[str], list[str], list[str]]:
@@ -149,21 +154,25 @@ def split_songs(ids: list[str], seed: int = 0, val: float = 0.1, test: float = 0
     return train_ids, val_ids, test_ids
 
 
+def phrase_bounds(frames: Frames, min_gap: int = 32) -> list[tuple[int, int]]:
+    """(first, last) frame index of each phrase, last included; see phrases"""
+    sounding = np.flatnonzero(frames.obs != REST)
+    if len(sounding) == 0:
+        return []
+    gaps = np.diff(sounding) - 1
+    cut = np.flatnonzero(gaps >= min_gap)
+    first = np.r_[sounding[0], sounding[cut + 1]]
+    last = np.r_[sounding[cut], sounding[-1]]
+    return list(zip(first.tolist(), last.tolist()))
+
+
 def phrases(frames: Frames, min_gap: int = 32) -> list[tuple[np.ndarray, np.ndarray]]:
     """Cut a song at silences of at least min_gap frames (32 = 2 bars of 4/4)
 
     Returns (obs, chord) pairs without leading or trailing rests
     Long silences are instrumental parts, not melody, so the model should not learn them
     """
-    sounding = np.flatnonzero(frames.obs != REST)
-    if len(sounding) == 0:
-        return []
-    # a new phrase starts where the gap since the previous sounding frame is long
-    gaps = np.diff(sounding) - 1
-    cut = np.flatnonzero(gaps >= min_gap)
-    first = np.r_[sounding[0], sounding[cut + 1]]
-    last = np.r_[sounding[cut], sounding[-1]]
-    return [(frames.obs[a : b + 1], frames.chord[a : b + 1]) for a, b in zip(first, last)]
+    return [(frames.obs[a : b + 1], frames.chord[a : b + 1]) for a, b in phrase_bounds(frames, min_gap)]
 
 
 def note_sequences(frames: Frames, min_gap: int = 32) -> list[tuple[np.ndarray, np.ndarray, np.ndarray]]:
@@ -180,3 +189,29 @@ def note_sequences(frames: Frames, min_gap: int = 32) -> list[tuple[np.ndarray, 
         gaps = np.diff(np.r_[onsets, len(obs)])
         out.append((obs[onsets], chord[onsets], gaps))
     return out
+
+
+def onset_phases(frames: Frames, min_gap: int = 32) -> list[np.ndarray]:
+    """Beat phase (0..3) of every note onset, phrase by phrase, aligned with note_sequences"""
+    out = []
+    for a, b in phrase_bounds(frames, min_gap):
+        onsets = a + np.flatnonzero(frames.obs[a : b + 1] < 12)
+        if len(onsets) >= 2:
+            out.append(frames.beat_phase(onsets))
+    return out
+
+
+def beat_chords(frames: Frames) -> list[np.ndarray]:
+    """Chord at each beat of the song, split where there is no chord (N), runs of 2+ beats kept"""
+    per_beat = frames.chord[frames.first_beat :: SUBDIVISIONS]
+    runs, current = [], []
+    for c in per_beat:
+        if c == NO_CHORD:
+            if len(current) >= 2:
+                runs.append(np.array(current))
+            current = []
+        else:
+            current.append(int(c))
+    if len(current) >= 2:
+        runs.append(np.array(current))
+    return runs
