@@ -7,10 +7,10 @@ With --form=AABA (default) the piece is made of 4-bar phrases that come back, va
 cadence; --form=none samples freely (the M3 first version). File names end in _<form>
 
 Tempo: --bpm=99-136 (default) draws a tempo in that range for each seed, --bpm=110 fixes it
-Sound: --preset=airy (default), dreamy, glass or pulse; --preset=all renders the same notes once per preset
+Sound: --preset=airy,dreamy (default, one WAV each), any of airy, dreamy, glass, pulse, or --preset=all
 
 Usage: python scripts/generate.py [--seeds=0,1,2] [--form=AABA] [--bars=16 (form none only)] [--bpm=99-136]
-       [--preset=airy] [--root=../POP909-Dataset/POP909]
+       [--preset=airy,dreamy] [--root=../POP909-Dataset/POP909]
 """
 
 import sys
@@ -32,7 +32,9 @@ seeds = [int(s) for s in opts.get("seeds", "0,1,2").split(",")]
 n_bars = int(opts.get("bars", 16))
 form = opts.get("form", "AABA")
 bpm_option = opts.get("bpm", "99-136")
-preset_names = sorted(PRESETS) if opts.get("preset") == "all" else [opts.get("preset", "airy")]
+# default: airy and dreamy (her favourites); --preset=all for every preset, or a comma separated list
+choice = opts.get("preset", "airy,dreamy")
+preset_names = sorted(PRESETS) if choice == "all" else choice.split(",")
 
 frames = {f.song_id: f for f in (to_frames(load_song(d)) for d in song_folders(root)) if f is not None}
 train_ids, val_ids, _ = split_songs(list(frames), seed=0)

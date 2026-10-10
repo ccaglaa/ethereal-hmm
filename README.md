@@ -142,7 +142,8 @@ An HMM whose hidden chord moves once per beat (chords change on beats, as in the
 `--form=none` for free sampling, or another form such as `--form=ABAB`:
 every A is the theme (varied after the first), every other letter is a new contrasting phrase.
 Tempo is drawn between 99 and 136 bpm for each seed (`--bpm=99-136`, or a fixed value like `--bpm=110`).
-`--preset=dreamy` picks a sound, `--preset=all` writes the same piece once per preset.
+By default each piece is written as `_airy.wav` and `_dreamy.wav` (the two favourites after listening);
+`--preset=glass` picks one sound, `--preset=all` writes the same piece once per preset.
 
 ### Form (`generate_form`)
 
