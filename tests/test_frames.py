@@ -9,6 +9,7 @@ from hmmusic.frames import (
     chord_name,
     chord_symbol,
     key_shift,
+    note_sequences,
     phrases,
     split_songs,
     to_frames,
@@ -108,3 +109,14 @@ def test_split_songs_is_a_partition_and_reproducible():
     assert (len(train), len(val), len(test)) == (80, 10, 10)
     assert split_songs(ids, seed=3) == (train, val, test)
     assert split_songs(ids, seed=4) != (train, val, test)
+
+
+def test_note_sequences():
+    obs = np.array([0, HOLD, REST, 4, 7, HOLD, HOLD] + [REST] * 5 + [9])
+    chord = np.array([0, 0, 0, 0, 19, 19, 19, 19, 19, 19, 19, 19, 10])
+    seqs = note_sequences(Frames("x", obs, chord, 0), min_gap=4)
+    assert len(seqs) == 1  # the last phrase has a single note and is dropped
+    pitches, chords, gaps = seqs[0]
+    assert pitches.tolist() == [0, 4, 7]
+    assert chords.tolist() == [0, 0, 19]
+    assert gaps.tolist() == [3, 1, 3]

@@ -164,3 +164,19 @@ def phrases(frames: Frames, min_gap: int = 32) -> list[tuple[np.ndarray, np.ndar
     first = np.r_[sounding[0], sounding[cut + 1]]
     last = np.r_[sounding[cut], sounding[-1]]
     return [(frames.obs[a : b + 1], frames.chord[a : b + 1]) for a, b in zip(first, last)]
+
+
+def note_sequences(frames: Frames, min_gap: int = 32) -> list[tuple[np.ndarray, np.ndarray, np.ndarray]]:
+    """One entry per note instead of per frame, for each phrase
+
+    Returns (pitch classes, chord at each note onset, frames until the next onset) per phrase
+    The last note's gap runs to the end of the phrase; phrases with fewer than 2 notes are dropped
+    """
+    out = []
+    for obs, chord in phrases(frames, min_gap):
+        onsets = np.flatnonzero(obs < 12)
+        if len(onsets) < 2:
+            continue
+        gaps = np.diff(np.r_[onsets, len(obs)])
+        out.append((obs[onsets], chord[onsets], gaps))
+    return out

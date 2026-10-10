@@ -53,6 +53,61 @@ and once a sample leaves the scale it never comes back. Test melodies rarely vis
 does not show it. Witten-Bell backs off to shorter contexts and its samples stay in the scale (`E - D - E - A ...`).
 Lesson: report likelihood and listen.
 
+## M2: HMM from scratch (`hmmusic/hmm.py`)
+
+Forward-backward with scaling, Viterbi, posterior decoding, Baum-Welch (EM with optional pseudo counts),
+supervised fitting and sampling. Two emission models:
+- plain: `B[i, v] = P(note | state)`
+- autoregressive (ar1): `B[i, u, v] = P(note | state, previous note)`
+
+Every inference result is tested against brute force over all K^T state paths, and one EM step is
+checked against expected counts computed by brute force.
+
+### Why one symbol per note, not per 16th
+
+On 16th frames the HMM with the annotated chords as states scored 2.38 bits per frame, worse than an order 1
+Markov chain (2.14): 73% of frames are HOLD or REST, and a chord says nothing about rhythm. So M2 models
+the sequence of notes (pitch class only); rhythm gets its own model in M3.
+
+### Results (`python scripts/hmm_experiments.py`, then `python scripts/summarize_hmm.py`)
+
+202,846 / 24,374 / 26,304 notes for train / val / test. Uniform guess: 3.585 bits per note.
+Baum-Welch: random Dirichlet start, pseudo count 0.1, stops at a gain below 1e-4 nats per note, 3 seeds (mean +- sd).
+
+| model | test bits per note | chord accuracy % |
+|---|---|---|
+| Markov order 0 / 1 / 2 / 3 / 4 | 2.679 / 2.404 / **2.358** / 2.366 / 2.473 | |
+| always the most common chord (Am) | | 18.1 |
+| chord from the current note only | | 28.2 |
+| HMM, states = annotated chords, plain | 2.633 | 33.8 |
+| HMM, states = annotated chords, ar1 | 2.381 | **36.9** |
+| Baum-Welch plain, K = 8 / 25 / 50 | 2.409 / 2.347 / 2.318 | 26.6 / 28.5 / 29.7 |
+| Baum-Welch ar1, K = 4 / 8 / 25 / 50 | 2.369 / 2.343 / 2.313 / **2.309** | 21.0 / 22.0 / 23.6 / 23.6 |
+
+Seed sd is 0.003 to 0.017 bits. Chord accuracy for Baum-Welch: each learned state is mapped to the chord it
+co-occurs with most on train.
+
+What this shows:
+
+1. **Unsupervised HMMs predict melodies best**, but only a little: 2.31 bits per note vs 2.36 for the best
+   Markov chain (about 2%, 3 seed sd).
+2. **Chords alone explain melodies poorly.** With the annotated chords as states, the plain HMM (2.63) barely
+   beats note frequencies (2.68). Adding the previous note (ar1) brings it to 2.38, close to Markov order 2.
+   Melodies move by small steps; the chord mostly decides which of the nearby notes.
+3. **Decoding matters.** Viterbi (best single path) gave 22.2% / 24.5% chord accuracy, below the current note
+   baseline; posterior decoding (best state per note) gives 33.8% / 36.9%. Viterbi over-smooths because
+   chords last several notes (76% of notes keep the previous note's chord).
+4. **Baum-Welch does not discover chords.** EM maximizes likelihood, and the hidden variable that helps most
+   is not harmony. Plain HMMs with few states learn single notes (K=8: one state per scale note), a Markov
+   chain in disguise. Given the previous note (ar1), states learn melodic motion
+   (`python scripts/inspect_states.py outputs/hmm_bw_ar1_K8_seed1.npz`): a "repeat" state (88% same note),
+   a "rise" state (67% up), "fall" states, a one-note falling step that never stays. Their chord accuracy
+   (ar1 ar. 23%) is below the current note baseline.
+
+Consequence for M3: generation uses the HMM with annotated chords as states (ar1). It predicts slightly
+worse than the best unsupervised model (2.38 vs 2.31 bits) but its hidden states are chords, which is
+exactly what the synth pad needs.
+
 ## Setup
 
 ```
@@ -67,7 +122,12 @@ Clone POP909 next to this repo, so the data lives in `../POP909-Dataset/POP909`.
 pytest
 python scripts/data_stats.py
 python scripts/markov_baselines.py
+python scripts/hmm_experiments.py
+python scripts/summarize_hmm.py
 ```
+
+`hmm_experiments.py` takes ar. 1.5 h. Add `--quick` for a 3 minute check, or split it over two terminals
+with `--orders=0` and `--orders=1`.
 
 Sampled melodies are written to `outputs/` as MIDI (open them in GarageBand).
 
@@ -76,5 +136,5 @@ Sampled melodies are written to `outputs/` as MIDI (open them in GarageBand).
 | # | Deliverable | Status |
 |---|---|---|
 | M1 | Data loading, MIDI reader and writer, representation, Markov chain baselines, held-out likelihood | Done |
-| M2 | HMM from scratch: forward-backward, Viterbi, Baum-Welch, tests against brute force | |
+| M2 | HMM from scratch: forward-backward, Viterbi, Baum-Welch, tests against brute force | Done |
 | M3 | Ethereal synth renderer (NumPy to WAV), generation, evaluation and listening | |
