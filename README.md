@@ -42,21 +42,9 @@ The two sounds differ only in rendering: *dreamy* has a softer lead, a slower pa
 
 ## How it works
 
-```mermaid
-flowchart LR
-    D[POP909 songs] -->|transpose to C or Am, 16th grid| T[Melodies and chords]
-    T --> R[Rhythm: gap to next note, given the position in the beat]
-    T --> C[Chords: Markov chain, one chord per beat]
-    T --> H[HMM emissions: note given chord and previous note]
-    R --> G[Generator: AABA form, cadence]
-    C --> G
-    H --> G
-    G -->|hidden chords| P[Pad]
-    G -->|observed notes| L[Lead]
-    P --> S[NumPy synth: delay, reverb]
-    L --> S
-    S --> W[WAV and MIDI]
-```
+<p align="center">
+  <img src="figures/model.svg" width="860" alt="Diagram: POP909 data feeds a hidden Markov model where hidden chords (Am, F, G, Am, one per beat) form a chain and each emits an observed note (E, A, D, C) that also depends on the previous note; a rhythm model places the notes. The hidden chords become the pad, the notes the lead, and a NumPy synth renders WAV and MIDI.">
+</p>
 
 1. **Data.** Each song's melody and annotated chords are moved to C major or A minor and put on a grid of 16th notes
 2. **Model.** The chord changes once per beat; at every note, the HMM draws a pitch from P(note | chord, previous note).
